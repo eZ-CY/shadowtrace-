@@ -14,7 +14,8 @@ import ReportExportButtons from "./ReportExportButtons";
 
 const { Title, Text } = Typography;
 
-/** Print stylesheet — injected once per page lifecycle. */
+/** Print stylesheet — injected once per page lifecycle.
+ *  打印时隐藏侧边栏、页头、目录和导出按钮，让报告内容占满页面。 */
 const PRINT_STYLES = `
 @media print {
   .shadowtrace-sidebar, .shadowtrace-header, .shadowtrace-toc, .shadowtrace-export-btns {
@@ -30,9 +31,13 @@ interface ReportViewerProps {
   eventStatus?: string;
 }
 
+/** 调查报告主查看器：15 章报告 + 目录 + 导出功能（ISSUE-074）。
+ *  三态渲染：加载中 → 未生成/生成中 → 报告内容。 */
 export default function ReportViewer({ report, loading, eventStatus }: ReportViewerProps) {
+  // 打印样式 <style> 元素的引用，用于组件卸载时清理
   const printStyleRef = useRef<HTMLStyleElement | null>(null);
 
+  // 挂载时注入打印样式，卸载时移除，避免样式泄漏
   useEffect(() => {
     if (typeof document === "undefined") return;
     const style = document.createElement("style");
@@ -47,7 +52,7 @@ export default function ReportViewer({ report, loading, eventStatus }: ReportVie
     };
   }, []);
 
-  // Loading state — page loading, not report generation
+  // 页面级加载态 — 事件详情仍在拉取中
   if (loading) {
     return (
       <div style={{ textAlign: "center", padding: 48 }}>
@@ -59,7 +64,7 @@ export default function ReportViewer({ report, loading, eventStatus }: ReportVie
     );
   }
 
-  // Not yet generated
+  // 报告未生成：区分「尚未生成」和「生成中」两种提示
   if (!report || report.sections.length === 0) {
     const isReporting = eventStatus === "reporting";
     return (
@@ -72,6 +77,7 @@ export default function ReportViewer({ report, loading, eventStatus }: ReportVie
     );
   }
 
+  // LLM 不可用时回退到模板生成，需在 UI 中提示用户
   const isTemplate = report.generated_by === "template";
 
   return (
@@ -104,11 +110,13 @@ export default function ReportViewer({ report, loading, eventStatus }: ReportVie
 
         <Divider />
 
+        {/* 按后端返回的顺序渲染章节，每个章节用 key 作为锚点 id 供 TOC 滚动定位 */}
         {report.sections.map((section) => (
           <div key={section.key} id={section.key} style={{ marginBottom: 32 }}>
             <Title level={5} id={`${section.key}-title`}>
               {section.title}
             </Title>
+            {/* whiteSpace: pre-wrap 保留 Markdown 换行，避免内容挤成一行 */}
             <Text style={{ whiteSpace: "pre-wrap" }}>{section.content}</Text>
           </div>
         ))}

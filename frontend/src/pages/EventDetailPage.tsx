@@ -560,6 +560,8 @@ export default function EventDetailPage() {
     {
       key: "report",
       label: "报告",
+      // ISSUE-074：用 ReportViewer 替代原先的 JsonPreview，提供结构化 15 章报告渲染、
+      // 目录导航、Markdown 下载和打印功能，而非原始 JSON 转储。
       children: <ReportViewer report={context?.report as InvestigationReport | null ?? null} loading={loading} eventStatus={event.event.status} />,
     },
   ];
