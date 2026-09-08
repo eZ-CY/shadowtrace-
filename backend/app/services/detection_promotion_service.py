@@ -106,6 +106,22 @@ class DetectionPromotionService:
                 record.promotion_id,
                 tenant_id=record.tenant_id,
             )
+            if record.context_projection_error is not None:
+                async with self._session_factory() as session:
+                    async with session.begin():
+                        row = await session.get(
+                            DetectionPromotionORM, record.promotion_id, with_for_update=True
+                        )
+                        if row is not None:
+                            payload = dict(row.payload or {})
+                            payload.pop(PAYLOAD_PROJECTION_ERROR_KEY, None)
+                            row.payload = payload
+                            row.reason_codes = [
+                                code
+                                for code in (row.reason_codes or [])
+                                if code
+                                != DetectionPromotionReasonCode.CONTEXT_PROJECTION_FAILED.value
+                            ]
             return None
         except ValidationError as exc:
             reason = (
@@ -187,8 +203,34 @@ class DetectionPromotionService:
         finalized = self._finalize_promotion_result(result)
         projection_error = await self._maybe_project_detection_context(finalized.record)
         if projection_error is None:
+            if (
+                self._context_projector is not None
+                and finalized.status is DetectionPromotionStatus.COMPLETED
+            ):
+                return finalized.model_copy(
+                    update={
+                        "record": finalized.record.model_copy(
+                            update={
+                                "context_projection_error": None,
+                                "reason_codes": [
+                                    code
+                                    for code in finalized.record.reason_codes
+                                    if code
+                                    is not DetectionPromotionReasonCode.CONTEXT_PROJECTION_FAILED
+                                ],
+                            }
+                        )
+                    }
+                )
             return finalized
-        return finalized.model_copy(update={"context_projection_error": projection_error})
+        return finalized.model_copy(
+            update={
+                "context_projection_error": projection_error,
+                "record": finalized.record.model_copy(
+                    update={"context_projection_error": projection_error}
+                ),
+            }
+        )
 
     async def promote_candidate(
         self,
@@ -867,7 +909,18 @@ def _row_to_record(row: DetectionPromotionORM) -> DetectionPromotionRecord:
         if row.ingest_result is not None
         else None
     )
+    raw_error = (row.payload or {}).get(PAYLOAD_PROJECTION_ERROR_KEY)
+    projection_error = (
+        DetectionContextProjectionError(
+            reason=raw_error["reason"],
+            message=raw_error.get("message", ""),
+            recorded_at=raw_error.get("at"),
+        )
+        if isinstance(raw_error, dict)
+        else None
+    )
     return DetectionPromotionRecord(
+        context_projection_error=projection_error,
         promotion_id=row.promotion_id,
         tenant_id=row.tenant_id,
         promotion_key=row.promotion_key,

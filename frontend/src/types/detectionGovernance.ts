@@ -137,7 +137,14 @@ export interface DetectionCandidateListResponse {
   items: DetectionCandidate[];
 }
 
+export interface DetectionContextProjectionError {
+  reason: string;
+  message: string;
+  recorded_at?: string | null;
+}
+
 export interface DetectionPromotionRecord {
+  context_projection_error?: DetectionContextProjectionError | null;
   promotion_id: string;
   schema_version?: string;
   tenant_id: string;
@@ -159,6 +166,7 @@ export interface DetectionPromotionRecord {
 }
 
 export interface DetectionPromotionResult {
+  context_projection_error?: DetectionContextProjectionError | null;
   promotion_id: string;
   status: DetectionPromotionStatus;
   record: DetectionPromotionRecord;

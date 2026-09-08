@@ -968,7 +968,7 @@ async def test_graph_replan_invokes_saga_compensate() -> None:
         _base_state(),
         {"configurable": {"thread_id": "evt-saga-compensate"}},
     )
-    assert rollback.calls == [("evt-graph-001", "act-failed-001")]
+    assert rollback.calls == [("evt-graph-001", ["act-failed-001"])]
     assert NODE_REPLAN in final["node_trace"]
     assert final["rollback_results"]
 
@@ -3717,3 +3717,41 @@ async def test_planner_revise_soft_limit_not_fresh_plan() -> None:
     )
     with pytest.raises(SoftTimeLimitExceeded):
         await planner_node(event_context, SoftPlanner())  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_saga_pending_compensation_routes_to_durable_manual_hold():
+    from unittest.mock import AsyncMock, MagicMock
+
+    services = _services()
+    services["rollback"] = MagicMock(
+        compensate=AsyncMock(
+            return_value=[
+                {
+                    "action_id": "act-old",
+                    "rollback_action_id": "act-rollback",
+                    "rolled_back": False,
+                    "warning": "awaiting_approval",
+                }
+            ]
+        )
+    )
+    agents = _agents()
+    agents["verify_agent"] = StubAgent(
+        VerificationResult(
+            overall_status=VerificationOverallStatus.FAILED,
+            verification_phase=VerificationPhase.EFFECT,
+            need_action_replan=True,
+            failed_actions=["act-fail"],
+        )
+    )
+    final = await build_investigation_graph(agents, services).ainvoke(
+        _base_state(),
+        {"configurable": {"thread_id": "evt-saga-pending"}},
+    )
+    assert final["execution_substate"] == ExecutionSubstate.MANUAL_RESOLUTION.value
+    assert final["manual_hold_reason"] == "saga_compensation_incomplete"
+    assert "act-rollback" in final["manual_hold_pending_ids"]
+    assert final["replan_count"] == 0
+    assert final["node_trace"].count(NODE_PLANNER) == 1
+    assert final["halted"] is True

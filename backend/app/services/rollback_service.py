@@ -536,22 +536,37 @@ class RollbackService:
     async def compensate(
         self,
         event_id: str,
-        failed_action_id: str,
+        failed_action_id: str | list[str],
         operator: str = "SagaCompensation",
         reason: str = "Saga compensation for failed action",
     ) -> list[RollbackResult]:
         """Saga compensation: rollback successful actions executed
-        *before* *failed_action_id* in reverse execution order.
+        before the earliest persisted failure in reverse execution order.
+        Accepts one ID or all failed IDs; invalid boundaries fail closed.
         """
         async with self._session_factory() as session:
-            failed_row = await session.get(orm.Action, failed_action_id)
-            if failed_row is None:
-                logger.warning(
-                    "compensate: failed_action_id not found: %s",
-                    failed_action_id,
+            failed_ids = sorted(
+                set([failed_action_id] if isinstance(failed_action_id, str) else failed_action_id)
+            )
+            if not failed_ids:
+                raise ValueError("compensation requires failed action IDs")
+            failed_rows = list(
+                await session.scalars(
+                    select(orm.Action).where(
+                        orm.Action.event_id == event_id,
+                        orm.Action.action_id.in_(failed_ids),
+                    )
                 )
-                return []
-            failed_at = failed_row.executed_at or _utc_now()
+            )
+            if len(failed_rows) != len(failed_ids):
+                raise ValueError("compensation failed actions must belong to the event")
+            if any(row.executed_at is None for row in failed_rows):
+                raise ValueError("compensation boundary requires persisted execution times")
+            if len({row.plan_revision for row in failed_rows}) != 1:
+                raise ValueError("compensation failed actions span plan revisions")
+            failed_row = min(failed_rows, key=lambda row: (row.executed_at, row.action_id))
+            failed_action_id = failed_row.action_id
+            failed_at = failed_row.executed_at
             failed_revision = int(failed_row.plan_revision)
 
             rows = list(
@@ -566,7 +581,7 @@ class RollbackService:
                         orm.Action.effect_verification_status == "verified",
                         orm.Action.source_action_id.is_(None),
                         orm.Action.superseded_by_revision.is_(None),
-                        orm.Action.action_id != failed_action_id,
+                        orm.Action.action_id.not_in(failed_ids),
                         orm.Action.executed_at < failed_at,
                     )
                     .order_by(orm.Action.executed_at.desc().nulls_last())

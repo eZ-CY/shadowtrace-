@@ -322,6 +322,12 @@ def _compensation_incomplete(results: list[Any]) -> bool:
             return True
         if warning:
             return True
+        payload = _rollback_result_dump(item)
+        if (
+            payload.get("compensation_writeback_required")
+            and payload.get("compensation_writeback_status") != "confirmed"
+        ):
+            return True
     return False
 
 
@@ -370,27 +376,31 @@ async def _compensate_before_replan(
     working_memory: Any | None,
     existing_degraded: list[str],
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Best-effort saga compensate; never blocks the subsequent replan."""
+    """Compensate prior side effects; incomplete compensation blocks replan."""
     if rollback is None or not failed_actions:
         return [], existing_degraded
-    failed_action_id = failed_actions[0].strip()
-    if not failed_action_id:
+    failed_action_ids = sorted({action.strip() for action in failed_actions if action.strip()})
+    if not failed_action_ids:
+        existing_degraded.append(SAGA_COMPENSATION_INCOMPLETE_FLAG)
         return [], existing_degraded
     compensate = getattr(rollback, "compensate", None)
     if not callable(compensate):
+        existing_degraded.append(SAGA_COMPENSATION_INCOMPLETE_FLAG)
         return [], existing_degraded
     try:
         results = await compensate(
             event_id,
-            failed_action_id,
+            failed_action_ids,
             operator=_SAGA_OPERATOR,
             reason=_SAGA_REASON,
         )
+        if not isinstance(results, (list, tuple)):
+            raise TypeError("compensation did not return a result list")
     except Exception:
         logger.exception(
-            "saga compensate failed event=%s failed_action=%s — replan continues",
+            "saga compensate failed event=%s failed_actions=%s — replan blocked",
             event_id,
-            failed_action_id,
+            failed_action_ids,
         )
         if SAGA_COMPENSATION_INCOMPLETE_FLAG not in existing_degraded:
             existing_degraded.append(SAGA_COMPENSATION_INCOMPLETE_FLAG)
@@ -461,6 +471,23 @@ async def replan_graph_node(
         working_memory=working_memory,
         existing_degraded=existing_degraded,
     )
+
+    if any(
+        str(flag).split("=", 1)[0] == SAGA_COMPENSATION_INCOMPLETE_FLAG
+        for flag in existing_degraded
+    ):
+        return cast(
+            InvestigationState,
+            {
+                "replan_count": current_count,
+                "escalated": False,
+                "halted": True,
+                "verify_need_manual_resolution": True,
+                "manual_hold_reason": SAGA_COMPENSATION_INCOMPLETE_FLAG,
+                "degraded_flags": existing_degraded,
+                "rollback_results": rollback_dumps,
+            },
+        )
 
     def _build_escalate_patches(target_status: EventStatus, *, halted: bool) -> dict[str, Any]:
         """Build state patches for an escalated replan result."""

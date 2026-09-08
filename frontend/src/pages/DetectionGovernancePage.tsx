@@ -283,7 +283,12 @@ export default function DetectionGovernancePage() {
           candidate_detection_id: candidateId,
           artifact_path: loadedPath,
         });
-        message.success(`升进已提交（${result.data.status}）`);
+        const projectionError = result.data.context_projection_error;
+        if (projectionError) {
+          message.warning(`升进上下文投影失败：${projectionError.message || projectionError.reason}`);
+        } else {
+          message.success(`升进已提交（${result.data.status}）`);
+        }
         await loadRelated(tenantId, packageIdFrom(artifact));
       } catch (err: unknown) {
         if (handleForbidden(err)) {
@@ -406,6 +411,17 @@ export default function DetectionGovernancePage() {
       title: "候选",
       dataIndex: "candidate_detection_id",
       key: "candidate_detection_id",
+    },
+    {
+      title: "上下文投影",
+      key: "context_projection_error",
+      render: (_, record) => record.context_projection_error ? (
+        <Typography.Text type="warning" data-testid={`projection-error-${record.promotion_id}`}>
+          投影失败：{record.context_projection_error.message || record.context_projection_error.reason}
+        </Typography.Text>
+      ) : record.reason_codes.includes("context_projection_failed") ? (
+        <Typography.Text type="warning">上下文投影失败，请重试</Typography.Text>
+      ) : "—",
     },
     {
       title: "原因码",

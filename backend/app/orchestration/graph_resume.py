@@ -73,6 +73,7 @@ _LEGITIMATE_MANUAL_DEGRADED_PREFIXES = frozenset(
         "disposition_activation_failed",
         "disposition_writeback_blocked",
         "execution_failed_unverified",
+        "saga_compensation_incomplete",
     }
 )
 

@@ -1583,3 +1583,40 @@ async def test_llm_revise_with_tool_agent_falls_back_to_default(tmp_path: Path) 
     assert plan.revision == 1
     assert "tool_agent" not in {s.assigned_agent for s in plan.steps}
     assert all(s.assigned_agent in PLAN_STEP_ASSIGNABLE_AGENTS for s in plan.steps)
+
+
+@pytest.mark.parametrize("revise", [False, True])
+@pytest.mark.asyncio
+async def test_planner_failure_preserves_event_tenant_in_react(monkeypatch, revise):
+    from types import SimpleNamespace
+
+    from app.models.context import EventContext
+    from app.models.react import ReActResult, ReActStopReason
+
+    snapshot = {"source_tenant_id": "tenant-b"}
+    fill = AsyncMock(
+        return_value=ReActResult(
+            stop_reason=ReActStopReason.FINISHED,
+            final_confidence=0.8,
+        )
+    )
+    agent = PlannerAgent(llm_client=MagicMock(), react_fill=fill)
+    agent._llm_plan = AsyncMock(side_effect=RuntimeError("LLM failed"))
+    agent._llm_revise = AsyncMock(side_effect=RuntimeError("LLM failed"))
+    monkeypatch.setattr(
+        "app.agents.planner_agent.get_settings", lambda: SimpleNamespace(react_enabled=True)
+    )
+    context = EventContext.model_construct(
+        event=SimpleNamespace(event_id="evt-tenant-b"),
+        triage_result=_make_triage(),
+        source_snapshot=snapshot,
+    )
+    if revise:
+        from app.agents.rules.default_plans import get_default_plan
+
+        previous = get_default_plan("evt-tenant-b", EventType.DATA_EXFILTRATION, "pln-prev")
+        await agent.revise(context, "failed", previous)
+    else:
+        await agent.plan(context)
+    fill.assert_awaited_once()
+    assert fill.call_args.args[1]["source_snapshot"] == snapshot

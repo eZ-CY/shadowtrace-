@@ -16,6 +16,7 @@ from app.models.detection_promotion import (
     DetectionPromotionRequest,
     DetectionPromotionStatus,
 )
+from app.services.detection_governance_service import assert_governance_tenant_access
 
 router = APIRouter(tags=["detection-promotion"])
 
@@ -51,11 +52,12 @@ async def create_detection_promotion(
     principal: Annotated[Principal, require_roles(ROLE_APPROVER)],
     promotion: DetectionPromotionDep,
 ) -> s.DetectionPromotionResultResponse:
-    del principal
+    assert_governance_tenant_access(principal, body.tenant_id)
     if body.artifact is not None:
         artifact = DetectionEvaluationArtifact.model_validate(body.artifact)
     else:
         artifact, _relative = load_evaluation_artifact(body.artifact_path or "")
+    assert_governance_tenant_access(principal, artifact.tenant_id)
     request = DetectionPromotionRequest(
         tenant_id=body.tenant_id,
         candidate_detection_id=body.candidate_detection_id,
@@ -78,7 +80,7 @@ async def list_detection_promotions(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=200),
 ) -> s.DetectionPromotionListResponse:
-    del principal
+    assert_governance_tenant_access(principal, tenant_id)
     offset = (page - 1) * page_size
     items, total = await promotion.list_promotions(
         tenant_id=tenant_id,
@@ -105,6 +107,6 @@ async def get_detection_promotion(
     principal: Annotated[Principal, require_roles(ROLE_ANALYST, ROLE_APPROVER)],
     promotion: DetectionPromotionDep,
 ) -> s.DetectionPromotionRecordResponse:
-    del principal
+    assert_governance_tenant_access(principal, tenant_id)
     record = await promotion.get_promotion(promotion_id, tenant_id=tenant_id)
     return _record_response(record)

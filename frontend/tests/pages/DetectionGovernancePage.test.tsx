@@ -300,4 +300,37 @@ describe("DetectionGovernancePage", () => {
     ).toBeInTheDocument();
     expect(screen.getByTestId("promote-cdet-1")).toBeInTheDocument();
   });
+
+  it("warns about projection failure and retains the reason in the Saga table", async () => {
+    const user = userEvent.setup();
+    const error = { reason: "context_projection_failed", message: "事件上下文写入失败" };
+    mockListCandidates.mockResolvedValue({
+      data: { total: 1, page: 1, page_size: 50, items: [makeCandidate()] },
+    });
+    mockCreatePromotion.mockResolvedValue({
+      data: {
+        promotion_id: "dprom-1",
+        status: "completed",
+        record: makePromotion(),
+        context_projection_error: error,
+      },
+    });
+    mockListPromotions
+      .mockResolvedValueOnce({ data: { total: 0, page: 1, page_size: 20, items: [] } })
+      .mockResolvedValue({
+        data: {
+          total: 1, page: 1, page_size: 20,
+          items: [makePromotion({ context_projection_error: error })],
+        },
+      });
+    renderPage();
+    await user.click(await screen.findByTestId("promote-cdet-1"));
+    await user.click(await screen.findByRole("button", { name: "升 进" }));
+    expect(await screen.findByText("升进上下文投影失败：事件上下文写入失败")).toBeInTheDocument();
+    expect(await screen.findByTestId("projection-error-dprom-1")).toHaveTextContent("事件上下文写入失败");
+    await waitFor(
+      () => expect(screen.queryByText("升进已提交（completed）")).not.toBeInTheDocument(),
+      { timeout: 5000 },
+    );
+  });
 });

@@ -10,6 +10,7 @@ from fastapi import APIRouter, Query
 from app.api.v1 import schemas as s
 from app.api.v1.deps import DetectionGovernanceDep, DetectionRuleRuntimeDep
 from app.core.auth import ROLE_ANALYST, ROLE_APPROVER, Principal, require_roles
+from app.core.errors import ResourceNotFoundError
 from app.evaluation.detection.artifact_io import (
     list_evaluation_artifact_summaries,
     load_evaluation_artifact,
@@ -22,6 +23,7 @@ from app.models.detection_governance import (
     DetectionGovernanceRevokeRequest,
 )
 from app.models.detection_rule import CandidateDetectionQuery
+from app.services.detection_governance_service import assert_governance_tenant_access
 
 router = APIRouter(tags=["detection-governance"])
 
@@ -166,8 +168,13 @@ async def list_detection_evaluation_artifacts(
     principal: Annotated[Principal, require_roles(ROLE_ANALYST, ROLE_APPROVER)],
     root: str = Query(default="detection_shadow_v1", min_length=1, max_length=256),
 ) -> s.DetectionEvaluationArtifactListResponse:
-    del principal
-    items = list_evaluation_artifact_summaries(root)
+    items = []
+    for item in list_evaluation_artifact_summaries(root):
+        try:
+            assert_governance_tenant_access(principal, item["tenant_id"])
+        except ResourceNotFoundError:
+            continue
+        items.append(item)
     return s.DetectionEvaluationArtifactListResponse(
         items=[s.DetectionEvaluationArtifactSummary.model_validate(item) for item in items]
     )
@@ -181,8 +188,8 @@ async def get_detection_evaluation_artifact_by_path(
     path: Annotated[str, Query(min_length=1, max_length=512)],
     principal: Annotated[Principal, require_roles(ROLE_ANALYST, ROLE_APPROVER)],
 ) -> s.DetectionEvaluationArtifactResponse:
-    del principal
     artifact, relative = load_evaluation_artifact(path)
+    assert_governance_tenant_access(principal, artifact.tenant_id)
     return s.DetectionEvaluationArtifactResponse(
         path=relative,
         artifact=artifact.model_dump(mode="json"),
@@ -202,7 +209,7 @@ async def list_detection_candidates(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
 ) -> s.DetectionCandidateListResponse:
-    del principal
+    assert_governance_tenant_access(principal, tenant_id)
     result = await runtime.query_candidates(
         CandidateDetectionQuery(
             source_tenant_id=tenant_id,

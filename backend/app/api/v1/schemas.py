@@ -851,6 +851,7 @@ class DetectionPromotionRecordResponse(BaseModel):
     ingest_result: dict[str, Any] | None = None
     reason_codes: list[str] = Field(default_factory=list)
     reason_message: str = ""
+    context_projection_error: dict[str, Any] | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

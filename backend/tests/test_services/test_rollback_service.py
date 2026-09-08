@@ -1943,3 +1943,40 @@ def test_rollback_result_compatibility_field() -> None:
         ],
     )
     assert r2.compensation_writeback_id is None
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.asyncio
+async def test_compensate_multiple_failures_uses_earliest_persisted_boundary(
+    session_factory,
+    audit,
+    cleanup,
+    reverse,
+):
+    event_id = await _seed_event(session_factory)
+    start = _utc_now()
+    actions = []
+    for offset, status in enumerate(
+        [
+            ActionStatus.SUCCESS,
+            ActionStatus.FAILED,
+            ActionStatus.SUCCESS,
+            ActionStatus.FAILED,
+        ]
+    ):
+        actions.append(
+            await _seed_response_action(
+                session_factory,
+                event_id=event_id,
+                tool_name="block_ip",
+                target=f"10.0.0.{offset + 1}",
+                status=status,
+                executed_at=datetime.fromtimestamp(start.timestamp() + offset * 10, tz=UTC),
+            )
+        )
+    ids = [actions[1].action_id, actions[3].action_id]
+    if reverse:
+        ids.reverse()
+    result = await RollbackService(session_factory, audit=audit).compensate(event_id, ids)
+    assert [item.action_id for item in result] == [actions[0].action_id]
+    assert result[0].warning == "awaiting_approval"

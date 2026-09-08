@@ -133,7 +133,7 @@ def test_create_promotion_requires_approver(
     client, fake = promotion_client
 
     async def _analyst() -> Principal:
-        return Principal(subject="analyst-only", roles=["analyst"])
+        return Principal(subject="analyst-only", roles=["analyst"], tenant_id="tenant-a")
 
     app.dependency_overrides[get_principal] = _analyst
     response = client.post(
@@ -173,6 +173,9 @@ def test_create_promotion_from_path(
     promotion_client: tuple[TestClient, _FakePromotion],
 ) -> None:
     client, fake = promotion_client
+    app.dependency_overrides[get_principal] = lambda: Principal(
+        subject="eval-approver", roles=["approver"], tenant_id="tenant-detection-eval"
+    )
     response = client.post(
         "/api/v1/detection/promotions",
         json={
@@ -278,7 +281,7 @@ def test_list_promotions_allows_analyst(
     client, _ = promotion_client
 
     async def _analyst() -> Principal:
-        return Principal(subject="analyst-only", roles=["analyst"])
+        return Principal(subject="analyst-only", roles=["analyst"], tenant_id="tenant-a")
 
     app.dependency_overrides[get_principal] = _analyst
     response = client.get(
@@ -286,3 +289,65 @@ def test_list_promotions_allows_analyst(
         params={"tenant_id": "tenant-a"},
     )
     assert response.status_code == 200
+
+
+@pytest.mark.parametrize("role", ["approver", "analyst"])
+@pytest.mark.parametrize("path", ["", "/dprom-test"])
+def test_cross_tenant_promotion_reads_denied(promotion_client, role, path):
+    client, fake = promotion_client
+    app.dependency_overrides[get_principal] = lambda: Principal(
+        subject="tenant-a-user", roles=[role], tenant_id="tenant-a"
+    )
+    fake.record = _record(tenant_id="tenant-b")
+    response = client.get(f"/api/v1/detection/promotions{path}", params={"tenant_id": "tenant-b"})
+    assert response.status_code == 404
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("from_path", [False, True])
+def test_cross_tenant_promotion_denied_before_loading_or_execution(promotion_client, from_path):
+    client, fake = promotion_client
+    fake.record = _record(tenant_id="tenant-b")
+    artifact = _minimal_artifact_payload() | {"tenant_id": "tenant-b"}
+    source = {"artifact_path": "nonexistent.json"} if from_path else {"artifact": artifact}
+    response = client.post(
+        "/api/v1/detection/promotions",
+        json={
+            "tenant_id": "tenant-b",
+            "candidate_detection_id": "cdet-1",
+            **source,
+        },
+    )
+    assert response.status_code == 404
+    assert fake.calls == []
+
+
+def test_foreign_artifact_with_own_tenant_denied(promotion_client):
+    client, fake = promotion_client
+    response = client.post(
+        "/api/v1/detection/promotions",
+        json={
+            "tenant_id": "tenant-a",
+            "candidate_detection_id": "cdet-1",
+            "artifact": _minimal_artifact_payload() | {"tenant_id": "tenant-b"},
+        },
+    )
+    assert response.status_code == 404
+    assert fake.calls == []
+
+
+def test_projection_error_survives_list_and_detail(promotion_client):
+    client, fake = promotion_client
+    fake.record = _record(
+        context_projection_error={
+            "reason": "context_projection_failed",
+            "message": "projection unavailable",
+        }
+    )
+    listed = client.get("/api/v1/detection/promotions", params={"tenant_id": "tenant-a"})
+    detail = client.get("/api/v1/detection/promotions/dprom-test", params={"tenant_id": "tenant-a"})
+    assert listed.status_code == detail.status_code == 200
+    assert (
+        listed.json()["items"][0]["context_projection_error"]["message"] == "projection unavailable"
+    )
+    assert detail.json()["context_projection_error"]["reason"] == "context_projection_failed"

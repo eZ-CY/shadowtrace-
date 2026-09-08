@@ -207,6 +207,9 @@ def test_record_approve_requires_threshold_manifest_path(
 
 def test_list_evaluation_artifacts(governance_client: tuple[TestClient, _FakeGovernance]) -> None:
     client, _ = governance_client
+    app.dependency_overrides[get_principal] = lambda: Principal(
+        subject="eval-analyst", roles=["analyst"], tenant_id="tenant-detection-eval"
+    )
     response = client.get("/api/v1/detection/evaluation/artifacts")
     assert response.status_code == 200
     paths = {item["path"] for item in response.json()["items"]}
@@ -219,6 +222,9 @@ def test_get_evaluation_artifact_by_path(
     governance_client: tuple[TestClient, _FakeGovernance],
 ) -> None:
     client, _ = governance_client
+    app.dependency_overrides[get_principal] = lambda: Principal(
+        subject="eval-analyst", roles=["analyst"], tenant_id="tenant-detection-eval"
+    )
     response = client.get(
         "/api/v1/detection/evaluation/artifacts/by-path",
         params={"path": "detection_shadow_v1/baseline_artifact.json"},
@@ -302,3 +308,34 @@ def test_list_candidates_wraps_runtime(
     assert body["items"] == []
     assert runtime.queries[0].source_tenant_id == "tenant-a"
     assert runtime.queries[0].package_id == "drpkg-test"
+
+
+@pytest.mark.parametrize("role", ["analyst", "approver"])
+def test_candidates_cross_tenant_denied(governance_client, role):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.api.v1 import deps
+
+    client, _ = governance_client
+    runtime = MagicMock(query_candidates=AsyncMock())
+    app.dependency_overrides[deps.get_detection_rule_runtime_service] = lambda: runtime
+    app.dependency_overrides[get_principal] = lambda: Principal(
+        subject="tenant-a-user", roles=[role], tenant_id="tenant-a"
+    )
+    response = client.get("/api/v1/detection/candidates", params={"tenant_id": "tenant-b"})
+    assert response.status_code == 404
+    runtime.query_candidates.assert_not_awaited()
+
+
+def test_artifacts_hide_other_tenants(governance_client):
+    client, _ = governance_client
+    response = client.get("/api/v1/detection/evaluation/artifacts")
+    assert response.status_code == 200
+    assert all(item["tenant_id"] == "tenant-a" for item in response.json()["items"])
+    response = client.get(
+        "/api/v1/detection/evaluation/artifacts/by-path",
+        params={
+            "path": "detection_shadow_v1/baseline_artifact.json",
+        },
+    )
+    assert response.status_code == 404

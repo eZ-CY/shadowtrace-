@@ -446,7 +446,12 @@ def route_after_writeback_recovery(state: InvestigationState) -> str:
 
 
 def route_after_replan(state: InvestigationState) -> str:
-    """After replan_node: if escalated, go to report; otherwise loop to planner."""
+    """Wait for compensation before allowing a new plan."""
+    if any(
+        str(flag).split("=", 1)[0] == "saga_compensation_incomplete"
+        for flag in (state.get("degraded_flags") or [])
+    ):
+        return ROUTE_MANUAL
     if state.get("escalated"):
         return ROUTE_REPORT
     return ROUTE_INVESTIGATE  # goes back to planner_node
@@ -1188,15 +1193,23 @@ def build_investigation_graph(
             WritebackReadiness.CAPABILITY_UNKNOWN.value,
         )
         flags = list(state.get("degraded_flags") or [])
-        entry = f"disposition_writeback_blocked={readiness}"
-        if entry not in flags:
-            flags.append(entry)
-        flags = await degraded_flags.set_flag(
-            state["event_id"],
-            "disposition_writeback_blocked",
-            readiness,
-            writer="DegradedFlagService",
+        saga_blocked = any(
+            str(flag).split("=", 1)[0] == "saga_compensation_incomplete" for flag in flags
         )
+        if saga_blocked:
+            flags = await degraded_flags.set_flag(
+                state["event_id"],
+                "saga_compensation_incomplete",
+                True,
+                writer="DegradedFlagService",
+            )
+        else:
+            flags = await degraded_flags.set_flag(
+                state["event_id"],
+                "disposition_writeback_blocked",
+                readiness,
+                writer="DegradedFlagService",
+            )
         pending_ids = list(
             dict.fromkeys(
                 [
@@ -1204,11 +1217,18 @@ def build_investigation_graph(
                     *(state.get("verify_recoverable_writeback_ids") or []),
                     *(state.get("verify_pending_writeback_action_ids") or []),
                     *(state.get("verify_failed_actions") or []),
+                    *(
+                        item["rollback_action_id"]
+                        for item in (state.get("rollback_results") or [])
+                        if item.get("rollback_action_id") and not item.get("rolled_back")
+                    ),
                 ]
             )
         )
         reason = "verify_need_manual_resolution"
-        if state.get("verify_need_manual_resolution"):
+        if any(str(flag).split("=", 1)[0] == "saga_compensation_incomplete" for flag in flags):
+            reason = "saga_compensation_incomplete"
+        elif state.get("verify_need_manual_resolution"):
             reason = "verify_need_manual_resolution"
         elif any(str(flag).startswith("disposition_writeback_blocked=") for flag in flags):
             reason = "disposition_writeback_blocked"
@@ -2436,7 +2456,7 @@ def build_investigation_graph(
             working_memory=services.get("working_memory"),
         )
         flags = list(patches.get("degraded_flags") or [])
-        if "saga_compensation_incomplete" in flags:
+        if any(str(flag).split("=", 1)[0] == "saga_compensation_incomplete" for flag in flags):
             persisted = await _persist_degraded_flag(
                 state,
                 "saga_compensation_incomplete",
@@ -2750,6 +2770,7 @@ def build_investigation_graph(
         NODE_REPLAN,
         route_after_replan,
         {
+            ROUTE_MANUAL: NODE_MANUAL_HOLD,
             ROUTE_REPORT: NODE_REPORT,
             ROUTE_INVESTIGATE: NODE_PLANNER,
         },
